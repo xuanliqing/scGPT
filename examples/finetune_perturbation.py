@@ -115,29 +115,33 @@ def build_model(vocab):
     )
 
     print(f"Loading pretrained weights from {model_file}...")
-    try:
-        model.load_state_dict(pretrained_state)
-    except Exception as exc:
-        print(f"Standard load failed, attempting prefix load: {exc}")
-        model_dict = model.state_dict()
-        pretrained_dict = dict(pretrained_state)
-        if "flag_encoder.weight" in pretrained_dict and "pert_encoder.weight" not in pretrained_dict:
-            pretrained_dict["pert_encoder.weight"] = pretrained_dict.pop(
-                "flag_encoder.weight"
-            )
-        if LOAD_PARAM_PREFIXES:
-            pretrained_dict = {
-                k: v
-                for k, v in pretrained_dict.items()
-                if any(k.startswith(prefix) for prefix in LOAD_PARAM_PREFIXES)
-            }
+    model_dict = model.state_dict()
+    pretrained_dict = dict(pretrained_state)
+    if (
+        "flag_encoder.weight" in pretrained_dict
+        and "pert_encoder.weight" not in pretrained_dict
+    ):
+        pretrained_dict["pert_encoder.weight"] = pretrained_dict.pop(
+            "flag_encoder.weight"
+        )
+    if LOAD_PARAM_PREFIXES:
         pretrained_dict = {
             k: v
             for k, v in pretrained_dict.items()
-            if k in model_dict and v.shape == model_dict[k].shape
+            if any(k.startswith(prefix) for prefix in LOAD_PARAM_PREFIXES)
         }
-        model_dict.update(pretrained_dict)
-        model.load_state_dict(model_dict, strict=False)
+    pretrained_dict = {
+        k: v
+        for k, v in pretrained_dict.items()
+        if k in model_dict and v.shape == model_dict[k].shape
+    }
+    load_info = model.load_state_dict(pretrained_dict, strict=False)
+    if load_info.missing_keys or load_info.unexpected_keys:
+        print(
+            "Loaded with missing keys: "
+            f"{len(load_info.missing_keys)}, unexpected keys: "
+            f"{len(load_info.unexpected_keys)}"
+        )
 
     return model.to(DEVICE)
 
