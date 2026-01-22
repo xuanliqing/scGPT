@@ -93,9 +93,12 @@ def build_model(vocab):
 
     pretrained_state = torch.load(model_file, map_location=DEVICE)
     use_fast_transformer = cfg.get("use_fast_transformer", True)
-    if any("self_attn.Wqkv" in key for key in pretrained_state):
+    normalized_keys = [
+        key[7:] if key.startswith("module.") else key for key in pretrained_state
+    ]
+    if any("self_attn.Wqkv" in key for key in normalized_keys):
         use_fast_transformer = True
-    elif any("self_attn.in_proj_weight" in key for key in pretrained_state):
+    elif any("self_attn.in_proj_weight" in key for key in normalized_keys):
         use_fast_transformer = False
 
     model = TransformerGenerator(
@@ -116,7 +119,10 @@ def build_model(vocab):
 
     print(f"Loading pretrained weights from {model_file}...")
     model_dict = model.state_dict()
-    pretrained_dict = dict(pretrained_state)
+    pretrained_dict = {
+        (key[7:] if key.startswith("module.") else key): value
+        for key, value in pretrained_state.items()
+    }
     if (
         "flag_encoder.weight" in pretrained_dict
         and "pert_encoder.weight" not in pretrained_dict
@@ -125,16 +131,27 @@ def build_model(vocab):
             "flag_encoder.weight"
         )
     if LOAD_PARAM_PREFIXES:
+        prefix_set = set(LOAD_PARAM_PREFIXES)
+        prefix_set.update({f"module.{prefix}" for prefix in LOAD_PARAM_PREFIXES})
         pretrained_dict = {
             k: v
             for k, v in pretrained_dict.items()
-            if any(k.startswith(prefix) for prefix in LOAD_PARAM_PREFIXES)
+            if any(k.startswith(prefix) for prefix in prefix_set)
         }
     pretrained_dict = {
         k: v
         for k, v in pretrained_dict.items()
         if k in model_dict and v.shape == model_dict[k].shape
     }
+    loaded_transformer_keys = [
+        key for key in pretrained_dict if key.startswith("transformer_encoder.")
+    ]
+    if not loaded_transformer_keys:
+        raise RuntimeError(
+            "No transformer_encoder weights matched the checkpoint. "
+            "Check that the checkpoint and model configs align, and that "
+            "LOAD_PARAM_PREFIXES includes transformer_encoder."
+        )
     load_info = model.load_state_dict(pretrained_dict, strict=False)
     if load_info.missing_keys or load_info.unexpected_keys:
         print(
