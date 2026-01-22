@@ -92,6 +92,10 @@ def build_model(vocab):
         cfg = json.load(f)
 
     pretrained_state = torch.load(model_file, map_location=DEVICE)
+    if isinstance(pretrained_state, dict) and "model" in pretrained_state:
+        pretrained_state = pretrained_state["model"]
+    elif isinstance(pretrained_state, dict) and "state_dict" in pretrained_state:
+        pretrained_state = pretrained_state["state_dict"]
     use_fast_transformer = cfg.get("use_fast_transformer", True)
     normalized_keys = [
         key[7:] if key.startswith("module.") else key for key in pretrained_state
@@ -146,11 +150,23 @@ def build_model(vocab):
     loaded_transformer_keys = [
         key for key in pretrained_dict if key.startswith("transformer_encoder.")
     ]
+    expected_attention_key = (
+        "self_attn.Wqkv" if use_fast_transformer else "self_attn.in_proj_weight"
+    )
+    matched_attention_keys = [
+        key for key in loaded_transformer_keys if expected_attention_key in key
+    ]
     if not loaded_transformer_keys:
         raise RuntimeError(
             "No transformer_encoder weights matched the checkpoint. "
             "Check that the checkpoint and model configs align, and that "
             "LOAD_PARAM_PREFIXES includes transformer_encoder."
+        )
+    if not matched_attention_keys:
+        raise RuntimeError(
+            "Transformer encoder weights were found, but the attention tensor names "
+            "do not match the current transformer implementation. Confirm the "
+            "checkpoint uses the same attention variant as this model."
         )
     load_info = model.load_state_dict(pretrained_dict, strict=False)
     if load_info.missing_keys or load_info.unexpected_keys:
