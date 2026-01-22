@@ -105,24 +105,24 @@ def build_model(vocab):
     elif any("self_attn.in_proj_weight" in key for key in normalized_keys):
         use_fast_transformer = False
 
-    model = TransformerGenerator(
-        ntoken=len(vocab),
-        d_model=cfg["embsize"],
-        nhead=cfg["nheads"],
-        d_hid=cfg["d_hid"],
-        nlayers=cfg["nlayers"],
-        nlayers_cls=cfg.get("n_layers_cls", 3),
-        n_cls=1,
-        vocab=vocab,
-        dropout=cfg.get("dropout", 0.0),
-        pad_token=PAD_TOKEN,
-        pad_value=0,
-        pert_pad_id=cfg.get("pert_pad_id", 0),
-        use_fast_transformer=use_fast_transformer,
-    )
+    def build_transformer_model(use_fast: bool) -> TransformerGenerator:
+        return TransformerGenerator(
+            ntoken=len(vocab),
+            d_model=cfg["embsize"],
+            nhead=cfg["nheads"],
+            d_hid=cfg["d_hid"],
+            nlayers=cfg["nlayers"],
+            nlayers_cls=cfg.get("n_layers_cls", 3),
+            n_cls=1,
+            vocab=vocab,
+            dropout=cfg.get("dropout", 0.0),
+            pad_token=PAD_TOKEN,
+            pad_value=0,
+            pert_pad_id=cfg.get("pert_pad_id", 0),
+            use_fast_transformer=use_fast,
+        )
 
     print(f"Loading pretrained weights from {model_file}...")
-    model_dict = model.state_dict()
     pretrained_dict = {
         (key[7:] if key.startswith("module.") else key): value
         for key, value in pretrained_state.items()
@@ -142,20 +142,35 @@ def build_model(vocab):
             for k, v in pretrained_dict.items()
             if any(k.startswith(prefix) for prefix in prefix_set)
         }
-    pretrained_dict = {
-        k: v
-        for k, v in pretrained_dict.items()
-        if k in model_dict and v.shape == model_dict[k].shape
-    }
-    loaded_transformer_keys = [
-        key for key in pretrained_dict if key.startswith("transformer_encoder.")
-    ]
-    expected_attention_key = (
-        "self_attn.Wqkv" if use_fast_transformer else "self_attn.in_proj_weight"
+
+    def load_with_variant(use_fast: bool):
+        model = build_transformer_model(use_fast)
+        model_dict = model.state_dict()
+        filtered = {
+            k: v
+            for k, v in pretrained_dict.items()
+            if k in model_dict and v.shape == model_dict[k].shape
+        }
+        loaded_transformer_keys = [
+            key for key in filtered if key.startswith("transformer_encoder.")
+        ]
+        expected_attention_key = (
+            "self_attn.Wqkv" if use_fast else "self_attn.in_proj_weight"
+        )
+        matched_attention_keys = [
+            key for key in loaded_transformer_keys if expected_attention_key in key
+        ]
+        return model, filtered, matched_attention_keys, loaded_transformer_keys
+
+    model, filtered_dict, matched_attention_keys, loaded_transformer_keys = (
+        load_with_variant(use_fast_transformer)
     )
-    matched_attention_keys = [
-        key for key in loaded_transformer_keys if expected_attention_key in key
-    ]
+    if not matched_attention_keys:
+        fallback_use_fast = not use_fast_transformer
+        model, filtered_dict, matched_attention_keys, loaded_transformer_keys = (
+            load_with_variant(fallback_use_fast)
+        )
+        use_fast_transformer = fallback_use_fast
     if not loaded_transformer_keys:
         raise RuntimeError(
             "No transformer_encoder weights matched the checkpoint. "
@@ -168,7 +183,7 @@ def build_model(vocab):
             "do not match the current transformer implementation. Confirm the "
             "checkpoint uses the same attention variant as this model."
         )
-    load_info = model.load_state_dict(pretrained_dict, strict=False)
+    load_info = model.load_state_dict(filtered_dict, strict=False)
     if load_info.missing_keys or load_info.unexpected_keys:
         print(
             "Loaded with missing keys: "
