@@ -25,6 +25,11 @@ from gears import PertData
 DATA_DIR = "./data"
 SAVE_DIR = "./save/finetuned_adamson"
 PRETRAINED_DIR = "./pretrain"
+LOAD_PARAM_PREFIXES = [
+    "encoder",
+    "value_encoder",
+    "transformer_encoder",
+]
 
 BATCH_SIZE = 16
 EVAL_BATCH_SIZE = 32
@@ -64,6 +69,7 @@ def load_data_and_vocab():
     for token in SPECIAL_TOKENS:
         if token not in vocab:
             vocab.append_token(token)
+    vocab.set_default_index(vocab[PAD_TOKEN])
 
     genes = pert_data.adata.var["gene_name"].tolist()
     gene_ids = np.array(
@@ -105,14 +111,21 @@ def build_model(vocab):
     try:
         model.load_state_dict(torch.load(model_file, map_location=DEVICE))
     except Exception as exc:
-        print(f"Standard load failed, attempting relaxed load: {exc}")
+        print(f"Standard load failed, attempting prefix load: {exc}")
         model_dict = model.state_dict()
         pretrained_dict = torch.load(model_file, map_location=DEVICE)
-        pretrained_dict = {
-            k: v
-            for k, v in pretrained_dict.items()
-            if k in model_dict and v.shape == model_dict[k].shape
-        }
+        if LOAD_PARAM_PREFIXES:
+            pretrained_dict = {
+                k: v
+                for k, v in pretrained_dict.items()
+                if any(k.startswith(prefix) for prefix in LOAD_PARAM_PREFIXES)
+            }
+        else:
+            pretrained_dict = {
+                k: v
+                for k, v in pretrained_dict.items()
+                if k in model_dict and v.shape == model_dict[k].shape
+            }
         model_dict.update(pretrained_dict)
         model.load_state_dict(model_dict)
 
