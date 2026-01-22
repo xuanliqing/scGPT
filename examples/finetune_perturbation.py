@@ -91,6 +91,13 @@ def build_model(vocab):
     with open(config_file, "r") as f:
         cfg = json.load(f)
 
+    pretrained_state = torch.load(model_file, map_location=DEVICE)
+    use_fast_transformer = cfg.get("use_fast_transformer", True)
+    if any("self_attn.Wqkv" in key for key in pretrained_state):
+        use_fast_transformer = True
+    elif any("self_attn.in_proj_weight" in key for key in pretrained_state):
+        use_fast_transformer = False
+
     model = TransformerGenerator(
         ntoken=len(vocab),
         d_model=cfg["embsize"],
@@ -104,30 +111,33 @@ def build_model(vocab):
         pad_token=PAD_TOKEN,
         pad_value=0,
         pert_pad_id=cfg.get("pert_pad_id", 0),
-        use_fast_transformer=cfg.get("use_fast_transformer", True),
+        use_fast_transformer=use_fast_transformer,
     )
 
     print(f"Loading pretrained weights from {model_file}...")
     try:
-        model.load_state_dict(torch.load(model_file, map_location=DEVICE))
+        model.load_state_dict(pretrained_state)
     except Exception as exc:
         print(f"Standard load failed, attempting prefix load: {exc}")
         model_dict = model.state_dict()
-        pretrained_dict = torch.load(model_file, map_location=DEVICE)
+        pretrained_dict = dict(pretrained_state)
+        if "flag_encoder.weight" in pretrained_dict and "pert_encoder.weight" not in pretrained_dict:
+            pretrained_dict["pert_encoder.weight"] = pretrained_dict.pop(
+                "flag_encoder.weight"
+            )
         if LOAD_PARAM_PREFIXES:
             pretrained_dict = {
                 k: v
                 for k, v in pretrained_dict.items()
                 if any(k.startswith(prefix) for prefix in LOAD_PARAM_PREFIXES)
             }
-        else:
-            pretrained_dict = {
-                k: v
-                for k, v in pretrained_dict.items()
-                if k in model_dict and v.shape == model_dict[k].shape
-            }
+        pretrained_dict = {
+            k: v
+            for k, v in pretrained_dict.items()
+            if k in model_dict and v.shape == model_dict[k].shape
+        }
         model_dict.update(pretrained_dict)
-        model.load_state_dict(model_dict)
+        model.load_state_dict(model_dict, strict=False)
 
     return model.to(DEVICE)
 
